@@ -127,6 +127,25 @@ async fn retry_video(state: State<'_, AppState>, id: i64) -> Result<Video, Strin
     with_db(&state, |conn| db::get_video(conn, id))
 }
 
+// ---------- 提示词润色 ----------
+
+#[tauri::command]
+async fn optimize_prompt(
+    state: State<'_, AppState>,
+    prompt: String,
+    style: String,
+) -> Result<String, String> {
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("请先输入你的创意想法".to_string());
+    }
+    let api_key = with_db(&state, |conn| db::get_settings(conn))?.api_key;
+    if api_key.trim().is_empty() {
+        return Err("请先在设置页配置 MiniMax API Key".to_string());
+    }
+    minimax::optimize_prompt(&api_key, &prompt, style.trim()).await
+}
+
 // ---------- 文件 ----------
 
 #[tauri::command]
@@ -219,6 +238,7 @@ pub fn run() {
             create_video,
             poll_video,
             retry_video,
+            optimize_prompt,
             download_video,
             open_path,
             list_videos,

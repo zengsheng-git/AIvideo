@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Promotion } from '@element-plus/icons-vue'
@@ -9,15 +9,68 @@ import { store } from '../store'
 const router = useRouter()
 
 const prompt = ref('')
+const promptInputRef = ref()
 const model = ref('MiniMax-Hailuo-2.3')
 const resolution = ref('768P')
 const duration = ref(6)
-const optimizer = ref(true)
+const optimizer = ref(false)
 const submitting = ref(false)
+
+const polishing = ref(false)
+const polishVisible = ref(false)
+const polishResult = ref('')
+const polishStyles = ref<string[]>(['电影感'])
+const polishStyleList = ref([
+  '电影感',
+  '国风水墨',
+  '赛博朋克',
+  '日系动画',
+  '纪实跟拍',
+  '广告大片',
+  '治愈可爱',
+])
+
+const cameraGroups = [
+  {
+    name: '移动',
+    commands: [
+      { label: '左横移', cmd: '[Truck left]' },
+      { label: '右横移', cmd: '[Truck right]' },
+      { label: '上升', cmd: '[Pedestal up]' },
+      { label: '下降', cmd: '[Pedestal down]' },
+    ],
+  },
+  {
+    name: '摇镜',
+    commands: [
+      { label: '左摇', cmd: '[Pan left]' },
+      { label: '右摇', cmd: '[Pan right]' },
+      { label: '上仰', cmd: '[Tilt up]' },
+      { label: '下俯', cmd: '[Tilt down]' },
+    ],
+  },
+  {
+    name: '推拉变焦',
+    commands: [
+      { label: '推近', cmd: '[Push in]' },
+      { label: '拉远', cmd: '[Pull out]' },
+      { label: '变焦推近', cmd: '[Zoom in]' },
+      { label: '变焦拉远', cmd: '[Zoom out]' },
+    ],
+  },
+  {
+    name: '特殊',
+    commands: [
+      { label: '跟拍', cmd: '[Tracking shot]' },
+      { label: '晃动', cmd: '[Shake]' },
+      { label: '固定', cmd: '[Static shot]' },
+    ],
+  },
+]
 
 const examples = [
   '一只橘猫在洒满阳光的窗台上打盹，毛发细节清晰，暖色调，电影质感',
-  '[拉远] 无人机视角下的雪山日出，云海翻涌，光线穿透云层，史诗感',
+  '[Pull out] 无人机视角下的雪山日出，云海翻涌，光线穿透云层，史诗感',
   '赛博朋克风格的雨夜街道，霓虹灯牌倒映在积水中，行人撑伞走过',
 ]
 
@@ -34,31 +87,52 @@ function applyExample(text: string) {
   prompt.value = text
 }
 
+async function insertCommand(cmd: string) {
+  const el = promptInputRef.value?.textarea as HTMLTextAreaElement | undefined
+  const text = prompt.value
+  if (!el) {
+    prompt.value = text ? `${text} ${cmd}` : cmd
+    return
+  }
+  const start = el.selectionStart ?? text.length
+  const end = el.selectionEnd ?? text.length
+  const before = text.slice(0, start)
+  const after = text.slice(end)
+  const spacer = before && !/\s$/.test(before) ? ' ' : ''
+  prompt.value = before + spacer + cmd + after
+  await nextTick()
+  el.focus()
+  const pos = (before + spacer + cmd).length
+  el.setSelectionRange(pos, pos)
+}
+
+async function ensureApiKey(): Promise<boolean> {
+  try {
+    const settings = await api.getSettings()
+    if (settings.apiKey.trim()) return true
+  } catch {
+    return true
+  }
+  ElMessageBox.confirm(
+    '尚未配置 MiniMax API Key，无法使用该功能。是否现在前往设置页配置？',
+    '需要先配置 API Key',
+    {
+      confirmButtonText: '前往设置',
+      cancelButtonText: '稍后再说',
+      type: 'warning',
+    },
+  )
+    .then(() => router.push('/settings'))
+    .catch(() => {})
+  return false
+}
+
 async function submit() {
   if (!prompt.value.trim()) {
     ElMessage.warning('请输入视频描述')
     return
   }
-
-  try {
-    const settings = await api.getSettings()
-    if (!settings.apiKey.trim()) {
-      ElMessageBox.confirm(
-        '尚未配置 MiniMax API Key，无法提交生成任务。是否现在前往设置页配置？',
-        '需要先配置 API Key',
-        {
-          confirmButtonText: '前往设置',
-          cancelButtonText: '稍后再说',
-          type: 'warning',
-        },
-      )
-        .then(() => router.push('/settings'))
-        .catch(() => {})
-      return
-    }
-  } catch {
-    void 0
-  }
+  if (!(await ensureApiKey())) return
 
   submitting.value = true
   try {
@@ -84,6 +158,74 @@ async function submit() {
     submitting.value = false
   }
 }
+
+async function runPolish() {
+  polishing.value = true
+  try {
+    polishResult.value = await api.optimizePrompt(
+      prompt.value.trim(),
+      polishStyles.value.join('、'),
+    )
+  } catch (e) {
+    ElMessage({
+      message: String(e),
+      type: 'error',
+      duration: 0,
+      showClose: true,
+      grouping: true,
+    })
+  } finally {
+    polishing.value = false
+  }
+}
+
+async function openPolish() {
+  if (!prompt.value.trim()) {
+    ElMessage.warning('请先输入你的创意想法，再让 AI 润色')
+    return
+  }
+  if (!(await ensureApiKey())) return
+  polishResult.value = ''
+  polishVisible.value = true
+}
+
+function pickStyle(style: string) {
+  const index = polishStyles.value.indexOf(style)
+  if (index >= 0) {
+    polishStyles.value.splice(index, 1)
+  } else {
+    polishStyles.value.push(style)
+  }
+}
+
+function addCustomStyle() {
+  if (polishing.value) return
+  ElMessageBox.prompt('输入自定义风格基调，例如：蒸汽波、黏土动画、黑色电影', '自定义风格', {
+    confirmButtonText: '添加并选中',
+    cancelButtonText: '取消',
+    inputPlaceholder: '风格名称（最多 12 字）',
+    inputPattern: /^.{1,12}$/,
+    inputErrorMessage: '请输入 1~12 个字的风格名称',
+  })
+    .then(({ value }) => {
+      const style = (value ?? '').trim()
+      if (!style) return
+      if (!polishStyleList.value.includes(style)) polishStyleList.value.push(style)
+      if (!polishStyles.value.includes(style)) polishStyles.value.push(style)
+    })
+    .catch(() => {})
+}
+
+function applyPolish() {
+  const text = polishResult.value.trim()
+  if (!text) {
+    ElMessage.warning('润色结果为空，请先生成')
+    return
+  }
+  prompt.value = text
+  polishVisible.value = false
+  ElMessage.success('已应用 AI 润色后的描述')
+}
 </script>
 
 <template>
@@ -97,17 +239,50 @@ async function submit() {
       <div class="panel">
         <div class="panel-head">
           <span class="panel-title">视频描述</span>
-          <span class="panel-count">{{ prompt.length }} / 2000</span>
+          <div class="panel-head-right">
+            <button
+              type="button"
+              class="polish-btn"
+              :disabled="polishing"
+              @click="openPolish"
+            >
+              <el-icon><MagicStick /></el-icon>
+              {{ polishing ? '润色中…' : 'AI 润色' }}
+            </button>
+            <span class="panel-count">{{ prompt.length }} / 2000</span>
+          </div>
         </div>
         <el-input
           v-model="prompt"
+          ref="promptInputRef"
           type="textarea"
           :rows="7"
           maxlength="2000"
           resize="none"
           class="prompt-input"
-          placeholder="描述你想生成的视频内容，支持运镜指令语法，例如：[推近] 一只橘猫在洒满阳光的窗台上打盹，毛发细节清晰，暖色调，电影质感"
+          placeholder="描述你想生成的视频内容，支持运镜指令语法，例如：[Push in] 一只橘猫在洒满阳光的窗台上打盹，毛发细节清晰，暖色调，电影质感"
         />
+        <div class="camera-panel">
+          <div class="camera-head">
+            <el-icon><VideoCameraFilled /></el-icon>
+            <span>运镜指令（点击插入到光标处 · 可组合最多 3 个）</span>
+          </div>
+          <div class="camera-groups">
+            <div v-for="g in cameraGroups" :key="g.name" class="camera-group">
+              <span class="camera-group-name">{{ g.name }}</span>
+              <button
+                v-for="c in g.commands"
+                :key="c.cmd"
+                type="button"
+                class="camera-chip"
+                :title="c.cmd"
+                @click="insertCommand(c.cmd)"
+              >
+                {{ c.label }}
+              </button>
+            </div>
+          </div>
+        </div>
         <div class="examples">
           <span class="examples-label">灵感示例</span>
           <div class="example-chips">
@@ -227,6 +402,67 @@ async function submit() {
         <span class="queue-empty-desc">提交左侧描述后，这里会实时展示生成进度</span>
       </div>
     </aside>
+
+    <el-dialog
+      v-model="polishVisible"
+      title="AI 润色提示词"
+      width="580px"
+      append-to-body
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+    >
+      <div class="polish-styles">
+        <span class="polish-label">风格基调（可多选组合，选好后点生成）</span>
+        <div class="polish-chip-row">
+          <button
+            v-for="s in polishStyleList"
+            :key="s"
+            type="button"
+            class="chip"
+            :class="{ active: polishStyles.includes(s) }"
+            :disabled="polishing"
+            @click="pickStyle(s)"
+          >
+            {{ s }}
+          </button>
+          <button
+            type="button"
+            class="chip chip-add"
+            :disabled="polishing"
+            @click="addCustomStyle"
+          >
+            ＋ 自定义
+          </button>
+        </div>
+      </div>
+      <el-input
+        v-model="polishResult"
+        type="textarea"
+        :rows="8"
+        resize="none"
+        :disabled="polishing"
+        class="polish-textarea"
+        placeholder="润色后的描述会显示在这里，可以直接编辑…"
+      />
+      <div class="polish-tip">可勾选多个风格自由组合，再次点击可取消；选好后点击「生成描述」开始润色，结果可直接编辑，满意后点击「使用这段描述」回填左侧输入框</div>
+      <template #footer>
+        <el-button :disabled="polishing" @click="polishVisible = false">取消</el-button>
+        <el-button
+          :type="polishResult.trim() ? 'default' : 'primary'"
+          :loading="polishing"
+          @click="runPolish"
+        >
+          {{ polishResult.trim() ? '重新生成' : '生成描述' }}
+        </el-button>
+        <el-button
+          type="primary"
+          :disabled="polishing || !polishResult.trim()"
+          @click="applyPolish"
+        >
+          使用这段描述
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -290,10 +526,108 @@ async function submit() {
   font-variant-numeric: tabular-nums;
 }
 
+.panel-head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.polish-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: var(--brand-gradient);
+  border: none;
+  border-radius: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(124, 92, 255, 0.3);
+  transition:
+    filter 0.18s ease,
+    box-shadow 0.2s ease;
+}
+
+.polish-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow: 0 6px 16px rgba(124, 92, 255, 0.4);
+}
+
+.polish-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .prompt-input :deep(.el-textarea__inner) {
   font-size: 14px;
   line-height: 1.7;
   padding: 12px 14px;
+}
+
+.camera-panel {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+}
+
+.camera-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 9px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.camera-head .el-icon {
+  color: var(--brand-1);
+  font-size: 13px;
+}
+
+.camera-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.camera-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.camera-group-name {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.camera-chip {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-base);
+  border-radius: 11px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.camera-chip:hover {
+  color: #c9baff;
+  border-color: rgba(124, 92, 255, 0.6);
+  background: var(--brand-soft);
 }
 
 .examples {
@@ -492,6 +826,59 @@ async function submit() {
 .submit-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.polish-styles {
+  margin-bottom: 14px;
+}
+
+.polish-label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-bottom: 9px;
+}
+
+.polish-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.polish-chip-row .chip {
+  min-width: 0;
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  border-radius: 15px;
+}
+
+.polish-chip-row .chip-add {
+  color: #c9baff;
+  background: transparent;
+  border-style: dashed;
+  border-color: rgba(124, 92, 255, 0.5);
+}
+
+.polish-chip-row .chip-add:hover:not(:disabled) {
+  color: #fff;
+  background: var(--brand-soft);
+  border-color: rgba(124, 92, 255, 0.8);
+}
+
+.polish-textarea {
+  margin-bottom: 10px;
+}
+
+.polish-textarea :deep(.el-textarea__inner) {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.polish-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 .queue {

@@ -178,3 +178,85 @@ pub async fn download_file(url: &str, dest: &Path) -> Result<u64, String> {
     file.flush().await.map_err(|e| e.to_string())?;
     Ok(total)
 }
+
+const TEXT_MODEL: &str = "MiniMax-M2.5-highspeed";
+
+const POLISH_SYSTEM: &str = "你是一位顶尖的 AI 视频提示词专家，精通 MiniMax Hailuo 视频生成模型的提示词写法。请把用户的视频创意扩写成一段高质量中文视频生成提示词，要求：
+1. 忠实保留用户的核心创意与主体内容，不得改变事实设定；
+2. 补充画面细节：主体外观与动作、场景环境、光线氛围、色彩基调、镜头语言；运镜必须使用官方英文指令语法：[Push in]、[Pull out]、[Pan left]、[Pan right]、[Truck left]、[Truck right]、[Pedestal up]、[Pedestal down]、[Tilt up]、[Tilt down]、[Zoom in]、[Zoom out]、[Tracking shot]、[Shake]、[Static shot]；同一个方括号内最多组合 3 个指令同时生效，多个方括号指令按出现顺序执行，全段 1~3 处运镜即可，不要堆砌；
+3. 语言精炼生动，直接描述画面，禁止输出任何解释、前言、总结或标题；
+4. 全文控制在 80~200 字；
+5. 只输出润色后的提示词本身。";
+
+#[derive(Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct ChatReq<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    temperature: f32,
+    top_p: f32,
+    max_completion_tokens: i64,
+}
+
+#[derive(Deserialize)]
+struct ChatMessageResp {
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatChoiceResp {
+    message: ChatMessageResp,
+}
+
+#[derive(Deserialize)]
+struct ChatResp {
+    #[serde(default)]
+    choices: Vec<ChatChoiceResp>,
+    base_resp: BaseResp,
+}
+
+pub async fn optimize_prompt(api_key: &str, prompt: &str, style: &str) -> Result<String, String> {
+    let mut user_content = format!("视频创意：{prompt}");
+    if !style.trim().is_empty() {
+        user_content.push_str(&format!("\n风格基调：{}", style.trim()));
+    }
+    let resp = client(Duration::from_secs(90))?
+        .post(format!("{BASE_URL}/v1/text/chatcompletion_v2"))
+        .bearer_auth(api_key)
+        .json(&ChatReq {
+            model: TEXT_MODEL,
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: POLISH_SYSTEM,
+                },
+                ChatMessage {
+                    role: "user",
+                    content: &user_content,
+                },
+            ],
+            temperature: 1.0,
+            top_p: 0.95,
+            max_completion_tokens: 4096,
+        })
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败：{e}"))?;
+    let body: ChatResp = resp.json().await.map_err(|e| format!("解析响应失败：{e}"))?;
+    check_base_resp(body.base_resp.status_code, &body.base_resp.status_msg)?;
+    let content = body
+        .choices
+        .first()
+        .map(|c| c.message.content.trim().to_string())
+        .unwrap_or_default();
+    if content.is_empty() {
+        return Err("模型未返回内容，请重试".to_string());
+    }
+    Ok(content)
+}

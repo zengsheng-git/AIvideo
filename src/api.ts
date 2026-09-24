@@ -16,6 +16,8 @@ export const api = {
     invoke<void>('save_settings', { apiKey, downloadDir }),
   pickDownloadDir: () => invoke<string | null>('pick_download_dir'),
   createVideo: (params: CreateVideoParams) => invoke<Video>('create_video', params),
+  optimizePrompt: (prompt: string, style: string) =>
+    invoke<string>('optimize_prompt', { prompt, style }),
   pollVideo: (id: number) => invoke<Video>('poll_video', { id }),
   retryVideo: (id: number) => invoke<Video>('retry_video', { id }),
   downloadVideo: (id: number) => invoke<Video>('download_video', { id }),
